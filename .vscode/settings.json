@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^powershell -Command \"Set-Location C:\\\\\\\\laragon\\\\\\\\www\\\\\\\\mymovie; Select-String -Path lib/services/anime_api\\.dart -Pattern fetchPlaybackConfigForAnime\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

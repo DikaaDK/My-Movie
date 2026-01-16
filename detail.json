@@ -1,0 +1,26 @@
+﻿{
+  "status": 200,
+  "creator": "Sanka Vollerei",
+  "data": {
+    "title": "Douse, Koishite Shimaunda. 2nd Season",
+    "poster": "https://anime-indo.lol/img/Douse-Koishite-Shimaunda.-2nd-Season.jpg",
+    "synopsis": "Merupakan season kedua dari series Douse, Koishite Shimaunda.",
+    "genres": [
+      "Drama",
+      "Reverse Harem",
+      "Romance",
+      "School",
+      "Shoujo"
+    ],
+    "episodes": [
+      {
+        "eps_title": "Episode  1",
+        "eps_slug": "douse-koishite-shimaunda-2nd-season-episode-1"
+      },
+      {
+        "eps_title": "Episode  2",
+        "eps_slug": "douse-koishite-shimaunda-2nd-season-episode-2"
+      }
+    ]
+  }
+}
