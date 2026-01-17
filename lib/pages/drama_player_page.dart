@@ -8,6 +8,7 @@ import '../models/dramabox_item.dart';
 import '../models/playback_config.dart';
 import '../services/dramabox_api.dart';
 import '../services/melolo_api.dart';
+import '../services/lk21_api.dart';
 
 class DramaPlayerPage extends StatefulWidget {
   const DramaPlayerPage({super.key, required this.item});
@@ -27,6 +28,7 @@ class _DramaPlayerPageState extends State<DramaPlayerPage> {
 
   final DramaBoxApi _dramaApi = const DramaBoxApi();
   final MeloloApi _meloloApi = const MeloloApi();
+  final Lk21Api _lk21Api = const Lk21Api();
 
   Future<List<DramaEpisode>>? _episodesFuture;
   VideoPlayerController? _videoController;
@@ -591,6 +593,73 @@ class _DramaPlayerPageState extends State<DramaPlayerPage> {
             return;
           }
         }
+        if (origin == ContentOrigin.lk21) {
+          final slug = (config.bookId ?? item.bookId).trim();
+          if (slug.isEmpty) {
+            setState(() {
+              _isLoadingPlayer = false;
+              _playerError = 'Slug LK21 tidak tersedia.';
+            });
+            return;
+          }
+          try {
+            final watch = await _lk21Api.fetchWatch(slug);
+            if (!mounted) {
+              return;
+            }
+            if (watch == null ||
+              (watch.streams.isEmpty && watch.fallbackStream == null)) {
+              setState(() {
+                _isLoadingPlayer = false;
+                _playerError = 'Stream LK21 tidak ditemukan';
+              });
+              return;
+            }
+            final stream = _pickBestLk21Stream(watch);
+            if (stream == null) {
+              setState(() {
+                _isLoadingPlayer = false;
+                _playerError = 'Format stream LK21 tidak didukung.';
+              });
+              return;
+            }
+            final played = await _playStream(
+              stream.url,
+              fallbackLink: config.webUrl ?? stream.url,
+            );
+            if (played) {
+              return;
+            }
+            final fallbackUrl = config.webUrl;
+            if (fallbackUrl != null && fallbackUrl.isNotEmpty) {
+              await _loadEmbedFromUrl(
+                fallbackUrl,
+                fallbackLink: fallbackUrl,
+              );
+              return;
+            }
+            setState(() {
+              _isLoadingPlayer = false;
+              _playerError = 'Tidak dapat memutar stream LK21.';
+              _activeEmbedUrl = null;
+              _embedController = null;
+              _fallbackLink = null;
+            });
+            return;
+          } on Exception catch (e) {
+            if (!mounted) {
+              return;
+            }
+            setState(() {
+              _isLoadingPlayer = false;
+              _playerError = e.toString();
+              _activeEmbedUrl = null;
+              _embedController = null;
+              _fallbackLink = null;
+            });
+            return;
+          }
+        }
         setState(() {
           _isLoadingPlayer = false;
           _playerError =
@@ -737,6 +806,28 @@ class _DramaPlayerPageState extends State<DramaPlayerPage> {
     setState(() {
       _embedController = controller;
     });
+  }
+
+  Lk21StreamItem? _pickBestLk21Stream(Lk21WatchResponse watch) {
+    final candidates = watch.streams
+        .where((entry) => entry.url.isNotEmpty)
+        .toList(growable: true);
+    final fallback = watch.fallbackStream;
+    if (fallback != null &&
+        fallback.url.isNotEmpty &&
+        candidates.every((entry) => entry.url != fallback.url)) {
+      candidates.add(fallback);
+    }
+    if (candidates.isEmpty) {
+      return null;
+    }
+    return candidates.firstWhere(
+      (entry) => entry.url.toLowerCase().endsWith('.m3u8'),
+      orElse: () => candidates.firstWhere(
+        (entry) => entry.type.toLowerCase() == 'hls',
+        orElse: () => candidates.first,
+      ),
+    );
   }
 
 }

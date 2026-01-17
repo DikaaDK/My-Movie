@@ -33,9 +33,6 @@ migrate_working_dir/
 .pub/
 /build/
 
-# Firebase config yang harus disimpan secara lokal.
-android/app/google-services.json
-
 # Symbolication related
 app.*.symbols
 
@@ -46,3 +43,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/app/google-services.json
+/android/app/src/debug/google-services.json
+
+# Keep Firebase config private
+firebase_options.dart

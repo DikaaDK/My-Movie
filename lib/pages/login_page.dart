@@ -1,6 +1,8 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../services/lk21_catalog_cache.dart';
+
 const _primaryBlue = Color(0xFF1F6FEB);
 const _accentBlue = Color(0xFF56CCF2);
 
@@ -35,6 +37,8 @@ class _LoginState extends State<Login> {
         email: _email.text.trim(),
         password: _password.text,
       );
+      await Lk21CatalogCache.instance.ensureInitialBatch();
+      Lk21CatalogCache.instance.startBackgroundFetching();
       if (!mounted) return;
       Navigator.of(context).pushReplacementNamed('/home');
     } on FirebaseAuthException catch (e) {

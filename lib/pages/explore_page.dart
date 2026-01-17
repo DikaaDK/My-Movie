@@ -1,11 +1,16 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../models/content_origin.dart';
 import '../models/dramabox_item.dart';
+import '../models/playback_config.dart';
 import '../pages/drama_player_page.dart';
 import '../services/dramabox_api.dart';
+import '../services/lk21_api.dart';
+import '../services/lk21_catalog_cache.dart';
 import '../services/melolo_api.dart';
 
 class ExplorePage extends StatefulWidget {
@@ -39,6 +44,39 @@ class _ExplorePageState extends State<ExplorePage> {
     'Mystery',
     'Isekai',
   ];
+  static const _defaultLk21Genres = <String>[
+    'Action',
+    'Adventure',
+    'Animation',
+    'Biography',
+    'Comedy',
+    'Crime',
+    'Documentary',
+    'Drama',
+    'Family',
+    'Fantasy',
+    'Film-Noir',
+    'Game-Show',
+    'History',
+    'Horror',
+    'Music',
+    'Mystery',
+    'Psychological',
+    'Reality-TV',
+    'Romance',
+    'Sci-fi',
+    'Short',
+    'Sport',
+    'Supernatural',
+    'TV Movie',
+    'Talk-Show',
+    'Thriller',
+    'War',
+    'Western',
+    'Wrestling',
+    '2025',
+    '2024',
+  ];
   static const _meloloGradient = LinearGradient(
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,
@@ -48,6 +86,11 @@ class _ExplorePageState extends State<ExplorePage> {
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,
     colors: [Color(0xFF1F6FEB), Color(0xFFE15B64)],
+  );
+  static const _lk21Gradient = LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [Color(0xFF4C1D95), Color(0xFF0EA5E9)],
   );
   static const _skeletonGradient = LinearGradient(
     begin: Alignment.topLeft,
@@ -62,22 +105,29 @@ class _ExplorePageState extends State<ExplorePage> {
 
   final DramaBoxApi _dramaBoxApi = const DramaBoxApi();
   final MeloloApi _meloloApi = const MeloloApi();
+  final Lk21Api _lk21Api = const Lk21Api();
+  final Lk21CatalogCache _lk21CatalogCache = Lk21CatalogCache.instance;
+  _SourceSlice? _pendingLk21Slice;
 
   TextEditingController? _searchController;
-  late Future<_ExploreData> _exploreFuture;
+  final ValueNotifier<_ExploreViewState> _viewStateNotifier =
+      ValueNotifier(const _ExploreViewState.loading());
   String _currentQuery = '';
   int _selectedGenre = -1;
   Set<_ContentSource>? _selectedSources;
   final ScrollController _scrollController = ScrollController();
   int _visibleItemCount = _initialBatchSize;
   bool _isLoadingMore = false;
+  List<String> _availableLk21Genres = _defaultLk21Genres;
 
   @override
   void initState() {
     super.initState();
     _ensureSearchController();
     _resetPagination();
-    _exploreFuture = _fetchExploreData();
+    unawaited(_loadDataAndNotify());
+    unawaited(_loadLk21Genres());
+    _lk21CatalogCache.addListener(_handleLk21CacheUpdated);
   }
 
   @override
@@ -86,6 +136,8 @@ class _ExplorePageState extends State<ExplorePage> {
       ?..removeListener(_handleSearchTextChanged)
       ..dispose();
     _scrollController.dispose();
+    _lk21CatalogCache.removeListener(_handleLk21CacheUpdated);
+    _viewStateNotifier.dispose();
     super.dispose();
   }
 
@@ -96,26 +148,27 @@ class _ExplorePageState extends State<ExplorePage> {
       body: Container(
         decoration: const BoxDecoration(gradient: _backgroundGradient),
         child: SafeArea(
-          child: FutureBuilder<_ExploreData>(
-            future: _exploreFuture,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return _buildLoadingSkeleton(theme);
+          child: ValueListenableBuilder<_ExploreViewState>(
+            valueListenable: _viewStateNotifier,
+            builder: (context, state, _) {
+              switch (state.status) {
+                case _ExploreStatus.loading:
+                  return _buildLoadingSkeleton(theme);
+                case _ExploreStatus.error:
+                  return _buildError(
+                    theme,
+                    state.message ?? 'Gagal memuat data eksplorasi.',
+                  );
+                case _ExploreStatus.ready:
+                  final data = state.data;
+                  if (data == null) {
+                    return _buildError(
+                      theme,
+                      'Data eksplorasi tidak tersedia dari layanan.',
+                    );
+                  }
+                  return _buildLoadedContent(theme, data);
               }
-              if (snapshot.hasError) {
-                return _buildError(
-                  theme,
-                  snapshot.error?.toString() ?? 'Gagal memuat data eksplorasi.',
-                );
-              }
-              final data = snapshot.data;
-              if (data == null) {
-                return _buildError(
-                  theme,
-                  'Data eksplorasi tidak tersedia dari layanan.',
-                );
-              }
-              return _buildLoadedContent(theme, data);
             },
           ),
         ),
@@ -143,7 +196,7 @@ class _ExplorePageState extends State<ExplorePage> {
         timestamp != null &&
         now.difference(timestamp) < _cacheTtl;
     if (cacheValid) {
-      return cached;
+      return cached!;
     }
 
     final dramaboxTrendingFuture = _safeFetch(_dramaBoxApi.fetchTrending);
@@ -163,12 +216,39 @@ class _ExplorePageState extends State<ExplorePage> {
     addSlice(_ContentSource.dramaBox, await dramaboxLatestFuture);
     addSlice(_ContentSource.melolo, await meloloTrendingFuture);
     addSlice(_ContentSource.melolo, await meloloLatestFuture);
+    final lk21Slice = await _createLk21Slice(ensureInitial: true);
+    addSlice(_ContentSource.lk21, lk21Slice.items);
 
-    final data = _ExploreData(slices);
-
-    _cachedData = data;
-    _cacheTimestamp = now;
+    var data = _ExploreData(slices);
+    if (_pendingLk21Slice != null) {
+      data = data.replaceSlice(_pendingLk21Slice!);
+      _pendingLk21Slice = null;
+    }
     return data;
+  }
+
+  Future<void> _loadLk21Genres() async {
+    try {
+      final filters = await _lk21Api.fetchGenres();
+      if (!mounted || filters.isEmpty) {
+        return;
+      }
+      final titles = filters
+          .map((option) => option.title)
+          .where((title) => title.isNotEmpty)
+          .toList(growable: false);
+      if (titles.isEmpty || listEquals(titles, _availableLk21Genres)) {
+        return;
+      }
+      setState(() {
+        _availableLk21Genres = titles;
+        if (_selectedGenre >= titles.length) {
+          _selectedGenre = titles.isEmpty ? -1 : 0;
+        }
+      });
+    } catch (_) {
+      // Keep the fallback list when the remote filters cannot be loaded.
+    }
   }
 
   Future<List<DramaBoxItem>> _safeFetch(
@@ -183,12 +263,32 @@ class _ExplorePageState extends State<ExplorePage> {
 
   Future<void> _onRefresh() async {
     _clearCache();
-    final future = _fetchExploreData();
     setState(() {
-      _exploreFuture = future;
       _resetPagination(shouldScrollToTop: true);
     });
-    await future;
+    await _loadDataAndNotify();
+  }
+
+  Future<void> _loadDataAndNotify({bool showLoading = true}) async {
+    if (showLoading) {
+      _viewStateNotifier.value = const _ExploreViewState.loading();
+    }
+    try {
+      final data = await _fetchExploreData();
+      if (!mounted) {
+        return;
+      }
+      _updateCachedData(data);
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      final errorMessage = error.toString();
+      final message = errorMessage.isNotEmpty
+          ? errorMessage
+          : 'Gagal memuat data eksplorasi.';
+      _viewStateNotifier.value = _ExploreViewState.error(message);
+    }
   }
 
   Widget _buildLoadedContent(ThemeData theme, _ExploreData data) {
@@ -207,10 +307,13 @@ class _ExplorePageState extends State<ExplorePage> {
       baseForTagExtraction.map((entry) => entry.item).toList(),
       limit: _fallbackGenres.length,
     );
-    final genres = derivedGenres.isEmpty ? _fallbackGenres : derivedGenres;
+    final shouldUseLk21Genres = _isFilteringLk21;
+    final genres = shouldUseLk21Genres
+      ? _availableLk21Genres
+      : (derivedGenres.isEmpty ? _fallbackGenres : derivedGenres);
     final selectedGenre = genres.isEmpty
-        ? -1
-        : (_selectedGenre >= genres.length ? 0 : _selectedGenre);
+      ? -1
+      : (_selectedGenre >= genres.length ? 0 : _selectedGenre);
     final totalCount = filteredItems.length;
     final visibleCount = totalCount == 0
         ? 0
@@ -389,6 +492,7 @@ class _ExplorePageState extends State<ExplorePage> {
   void _clearCache() {
     _cachedData = null;
     _cacheTimestamp = null;
+    _pendingLk21Slice = null;
   }
 
   void _resetPagination({bool shouldScrollToTop = false}) {
@@ -533,6 +637,7 @@ class _ExplorePageState extends State<ExplorePage> {
     const options = <_FilterOption>[
       _FilterOption('Semua Konten', null),
       _FilterOption('Dracin', {_ContentSource.dramaBox, _ContentSource.melolo}),
+      _FilterOption('Film LK21', {_ContentSource.lk21}),
     ];
     return Wrap(
       spacing: 10,
@@ -1094,6 +1199,12 @@ class _ExplorePageState extends State<ExplorePage> {
     });
   }
 
+  bool get _isFilteringLk21 {
+    return _selectedSources != null &&
+        _selectedSources!.length == 1 &&
+        _selectedSources!.contains(_ContentSource.lk21);
+  }
+
   void _handleSearchTextChanged() {
     if (!mounted) {
       return;
@@ -1228,6 +1339,132 @@ class _ExplorePageState extends State<ExplorePage> {
     final haystack = buffer.toString();
     return tokens.every((token) => haystack.contains(token));
   }
+
+  DramaBoxItem? _buildDramaBoxItemFromLk21(MovieResult movie) {
+    final slug = movie.slug.trim();
+    final title = movie.title.trim();
+    if (slug.isEmpty || title.isEmpty) {
+      return null;
+    }
+    final tags = _buildLk21Tags(movie);
+    return DramaBoxItem(
+      bookId: slug,
+      bookName: title,
+      coverUrl: movie.poster ?? '',
+      introduction: _buildLk21Introduction(movie),
+      tags: tags,
+      chapterCount: 1,
+      hotCode: movie.rating != null && movie.rating!.isNotEmpty
+          ? 'Rating ${movie.rating!.trim()}'
+          : null,
+      origin: ContentOrigin.lk21,
+      playback: PlaybackConfig.unavailable(
+        bookId: slug,
+        origin: ContentOrigin.lk21,
+        message: 'Sentuh untuk memuat streaming LK21.',
+        webUrl: movie.url,
+      ),
+    );
+  }
+
+  List<String> _buildLk21Tags(MovieResult movie) {
+    final tags = <String>[];
+    void add(String? value) {
+      final trimmed = value?.trim();
+      if (trimmed == null || trimmed.isEmpty) {
+        return;
+      }
+      tags.add(trimmed);
+    }
+
+    add(movie.quality);
+    add(movie.year);
+    add(movie.duration);
+    if (movie.rating != null && movie.rating!.trim().isNotEmpty) {
+      tags.add('Rating ${movie.rating!.trim()}');
+    }
+    if (tags.isEmpty) {
+      tags.add('Film LK21');
+    }
+    return tags;
+  }
+
+  String _buildLk21Introduction(MovieResult movie) {
+    final parts = <String>[];
+    void add(String? value) {
+      final trimmed = value?.trim();
+      if (trimmed == null || trimmed.isEmpty) {
+        return;
+      }
+      parts.add(trimmed);
+    }
+
+    add(movie.quality);
+    add(movie.year);
+    add(movie.duration);
+    if (movie.rating != null && movie.rating!.trim().isNotEmpty) {
+      parts.add('Rating ${movie.rating!.trim()}');
+    }
+    return parts.isEmpty ? 'Streaming LK21' : parts.join(' · ');
+  }
+
+  Future<_SourceSlice> _createLk21Slice({bool ensureInitial = false}) async {
+    try {
+      if (ensureInitial) {
+        await _lk21CatalogCache.ensureInitialBatch();
+      }
+      var movies = _lk21CatalogCache.snapshot;
+      if (movies.isEmpty) {
+        movies = await _lk21Api.fetchMovies();
+      }
+      return _buildLk21SliceFromMovies(movies);
+    } catch (_) {
+      return const _SourceSlice(_ContentSource.lk21, []);
+    }
+  }
+
+  _SourceSlice _buildLk21SliceFromMovies(List<MovieResult> movies) {
+    final items = _convertLk21Movies(movies);
+    return _SourceSlice(_ContentSource.lk21, items);
+  }
+
+  List<DramaBoxItem> _convertLk21Movies(List<MovieResult> movies) {
+    return movies
+        .map(_buildDramaBoxItemFromLk21)
+        .whereType<DramaBoxItem>()
+        .toList();
+  }
+
+  void _handleLk21CacheUpdated() {
+    final movies = _lk21CatalogCache.snapshot;
+    if (movies.isEmpty) {
+      return;
+    }
+    final slice = _buildLk21SliceFromMovies(movies);
+    if (slice.items.isEmpty) {
+      return;
+    }
+    _applyLk21Slice(slice);
+  }
+
+  void _applyLk21Slice(_SourceSlice slice) {
+    if (_cachedData == null) {
+      _pendingLk21Slice = slice;
+      return;
+    }
+    final updated = _cachedData!.replaceSlice(slice);
+    if (!mounted) {
+      _pendingLk21Slice = slice;
+      return;
+    }
+    _updateCachedData(updated);
+  }
+
+  void _updateCachedData(_ExploreData data) {
+    _cachedData = data;
+    _cacheTimestamp = DateTime.now();
+    _viewStateNotifier.value = _ExploreViewState.ready(data);
+  }
 }
 
 class _ExploreData {
@@ -1238,6 +1475,33 @@ class _ExploreData {
   List<_SourcedItem> get allItems {
     return _mergeSourced(slices);
   }
+
+  _ExploreData replaceSlice(_SourceSlice slice) {
+    final updated = slices
+        .map((existing) => existing.source == slice.source ? slice : existing)
+        .toList();
+    if (!updated.any((entry) => entry.source == slice.source)) {
+      updated.add(slice);
+    }
+    return _ExploreData(updated);
+  }
+}
+
+enum _ExploreStatus { loading, ready, error }
+
+class _ExploreViewState {
+  const _ExploreViewState._(this.status, this.data, this.message);
+
+  const _ExploreViewState.loading()
+      : this._(_ExploreStatus.loading, null, null);
+  const _ExploreViewState.ready(_ExploreData data)
+      : this._(_ExploreStatus.ready, data, null);
+  const _ExploreViewState.error(String message)
+      : this._(_ExploreStatus.error, null, message);
+
+  final _ExploreStatus status;
+  final _ExploreData? data;
+  final String? message;
 }
 
 class _SourcedItem {
@@ -1273,7 +1537,7 @@ List<_SourcedItem> _mergeSourced(List<_SourceSlice> slices) {
   return result;
 }
 
-enum _ContentSource { dramaBox, melolo }
+enum _ContentSource { dramaBox, melolo, lk21 }
 
 extension _ContentSourceStyling on _ContentSource {
   String get label {
@@ -1282,6 +1546,8 @@ extension _ContentSourceStyling on _ContentSource {
         return 'DramaBox';
       case _ContentSource.melolo:
         return 'Melolo';
+      case _ContentSource.lk21:
+        return 'LK21';
     }
   }
 
@@ -1291,6 +1557,8 @@ extension _ContentSourceStyling on _ContentSource {
         return _ExplorePageState._heroGradient;
       case _ContentSource.melolo:
         return _ExplorePageState._meloloGradient;
+      case _ContentSource.lk21:
+        return _ExplorePageState._lk21Gradient;
     }
   }
 }

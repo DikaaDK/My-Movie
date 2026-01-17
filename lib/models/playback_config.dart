@@ -50,11 +50,13 @@ class PlaybackConfig {
   const PlaybackConfig.unavailable({
     String? bookId,
     String? message,
+    String? webUrl,
     ContentOrigin? origin,
   }) : this._(
           kind: PlaybackKind.unavailable,
           message: message,
           bookId: bookId,
+          webUrl: webUrl,
           origin: origin,
         );
 

@@ -3,4 +3,5 @@ enum ContentOrigin {
   melolo,
   animeApi,
   shortCatalog,
+  lk21,
 }
