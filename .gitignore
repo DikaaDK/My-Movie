@@ -48,3 +48,14 @@ app.*.map.json
 
 # Keep Firebase config private
 firebase_options.dart
+
+# Local assets/configs not meant for remote
+list.json
+detail.json
+dramabase.html
+dramabos.html
+firebase.json
+latest.json
+movies_sample.json
+tmp_line_numbers.ps1
+tmp_print_lines.dart
